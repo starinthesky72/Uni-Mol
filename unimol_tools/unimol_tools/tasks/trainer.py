@@ -16,7 +16,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch.optim import Adam
 from torch.nn.utils import clip_grad_norm_
-from transformers.optimization import get_linear_schedule_with_warmup
+from transformers.optimization import get_cosine_with_hard_restarts_schedule_with_warmup
 from ..utils import Metrics
 from ..utils import logger
 from .split import Splitter
@@ -53,6 +53,7 @@ class Trainer(object):
         self.max_norm = params.get('max_norm', 1.0)
         self.cuda = params.get('cuda', False)
         self.amp = params.get('amp', False)
+        self.num_cycles = params.get('num_cycles', 5)
         self.device = torch.device(
             "cuda:0" if torch.cuda.is_available() and self.cuda else "cpu")
         self.scaler = torch.cuda.amp.GradScaler(
@@ -105,9 +106,10 @@ class Trainer(object):
         ### init optimizer ###
         num_training_steps = len(train_dataloader) * self.max_epochs
         num_warmup_steps = int(num_training_steps * self.warmup_ratio)
+        num_cycles = self.num_cycles
         optimizer = Adam(model.parameters(), lr=self.learning_rate, eps=1e-6)
-        scheduler = get_linear_schedule_with_warmup(
-            optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps)
+        scheduler = get_cosine_with_hard_restarts_schedule_with_warmup(
+            optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, num_cycles=num_cycles)
 
         for epoch in range(self.max_epochs):
             model = model.train()
@@ -167,10 +169,6 @@ class Trainer(object):
                                  optimizer.param_groups[0]['lr'],
                                  (end_time - start_time))
             logger.info(message)
-            is_early_stop, min_val_loss, wait, max_score = self._early_stop_choice(
-                wait, total_val_loss, min_val_loss, metric_score, max_score, model, dump_dir, fold, self.patience, epoch)
-            if is_early_stop:
-                break
 
         y_preds, _, _ = self.predict(model, valid_dataset, loss_func, activation_fn,
                                      dump_dir, fold, target_scaler, epoch, load_model=True, feature_name=feature_name)
